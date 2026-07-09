@@ -1,5 +1,11 @@
 # BayesianFitForecast
 
+> **Fork note.** This is a fork of [gchowell/BayesianFitForecast](https://github.com/gchowell/BayesianFitForecast).
+> The only change from upstream is `prior_sltn.R`, extended to support time-varying
+> parameter templates (`time_dependent_templates`) and `pow()` in the prior-predictive
+> (prior-solution) step. Autonomous / constant-parameter models behave identically to
+> upstream. Maintained by R. Subedi for personal research use.
+
 **BayesianFitForecast** is an R toolbox designed to streamline Bayesian parameter estimation and forecasting in ordinary differential equation (ODE) models, particularly for infectious disease applications. This toolbox simplifies the complex process of Bayesian inference by automating the generation of Stan files, enabling users to configure models, define priors, and analyze results efficiently, even with minimal programming expertise.
 
 <p> <a href="https://arxiv.org/abs/2411.05371" target="_blank">BayesianFitForecast Tutorial</a></p> 
