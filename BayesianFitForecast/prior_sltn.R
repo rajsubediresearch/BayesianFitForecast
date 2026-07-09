@@ -7,12 +7,68 @@ library(tidyr)
 n_prior_samples <- 200
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 dir.create("output", showWarnings = FALSE)
-source("options_SEIR_sanfrancisco_prior.R")
+source("options_SISMID_P2_Switzerland.R")
 folder_name <- file.path("output", paste("prior-solution", model_name, sep = "-"))
 dir.create(folder_name, showWarnings = FALSE)
 state_names <- vars
 n_vars <- length(state_names)
 init_values <- Ic
+
+# --- Additive helpers (backward-compatible) -------------------------------
+# These support options files that use C-style pow() and time-dependent
+# parameter templates. Options files that use neither are unaffected: pow()
+# simply goes unused, and preprocess_ode_system() is a no-op when
+# time_dependent_templates is empty or undefined.
+
+# Base-R equivalent of the C/Stan pow(x, y). Resolved via lexical scope during
+# eval(), so it needs no per-environment injection. No existing options file
+# defines its own pow(), so defining it here changes nothing for them.
+pow <- function(x, y) x^y
+
+# Convert a single C-style template body of the form
+#   "if (COND) { return (A); } else { return (B); }"
+# into an inline R expression string "ifelse((COND), (A), (B))".
+# If the body doesn't match that shape, it is returned unchanged so it can
+# still be dropped into the RHS verbatim (covers plain-expression templates).
+convert_template_body <- function(body) {
+  body <- trimws(body)
+  m <- regmatches(
+    body,
+    regexec(
+      "^if\\s*\\((.*?)\\)\\s*\\{\\s*return\\s*\\((.*?)\\)\\s*;?\\s*\\}\\s*else\\s*\\{\\s*return\\s*\\((.*)\\)\\s*;?\\s*\\}\\s*;?$",
+      body
+    )
+  )[[1]]
+  if (length(m) == 4) {
+    cond <- trimws(m[2]); a <- trimws(m[3]); b <- trimws(m[4])
+    return(sprintf("ifelse((%s), (%s), (%s))", cond, a, b))
+  }
+  body
+}
+
+# Substitute every named entry of time_dependent_templates into the ode_system
+# string, wrapping each expansion in parentheses so it composes safely inside
+# the surrounding arithmetic. Guarded: when the list is missing or empty the
+# ode_system string is returned byte-for-byte unchanged.
+preprocess_ode_system <- function(ode_string) {
+  if (!exists("time_dependent_templates") ||
+      length(time_dependent_templates) == 0) {
+    return(ode_string)
+  }
+  # Replace longer names first to avoid partial-name collisions
+  nm <- names(time_dependent_templates)
+  nm <- nm[order(nchar(nm), decreasing = TRUE)]
+  for (name in nm) {
+    replacement <- paste0("(", convert_template_body(time_dependent_templates[[name]]), ")")
+    ode_string <- gsub(name, replacement, ode_string, fixed = TRUE)
+  }
+  ode_string
+}
+
+# Build the effective ode_system once. Existing files (empty templates) get an
+# identical string; template-using files get the expanded version.
+ode_system_effective <- preprocess_ode_system(ode_system)
+# --------------------------------------------------------------------------
 
 ode_rhs <- function(index, ode_system) {
   ode_lines <- strsplit(ode_system, "\n")[[1]]
@@ -29,10 +85,12 @@ dynamic_model <- function(time, state, parameters) {
   param_env <- setNames(as.list(parameters), param_names)
   state_env <- setNames(as.list(state), state_names)
   
-  env <- list2env(c(param_env, state_env))
+  # Inject current time as `t` so time-dependent templates can reference it.
+  # Files with no `t` in their RHS ignore this binding.
+  env <- list2env(c(param_env, state_env, list(t = time)))
   
   derivs <- numeric(length(state))
-  ode_lines <- strsplit(ode_system, "\n")[[1]]
+  ode_lines <- strsplit(ode_system_effective, "\n")[[1]]
   ode_lines <- ode_lines[nzchar(trimws(ode_lines))]
   
   for (i in seq_along(state)) {
@@ -137,14 +195,14 @@ for (fit_idx in 1:n_fitting) {
   use_diff <- fitting_diff[fit_idx]
   
   if (use_diff == 1) {
-    rhs_expr <- ode_rhs(var_index, ode_system)
+    rhs_expr <- ode_rhs(var_index, ode_system_effective)
     fit_values <- sapply(1:nrow(sim_result), function(i) {
       param_names <- paste0("params", seq_along(param_values))
       param_env <- setNames(as.list(param_values), param_names)
       state_cols <- paste0("vars", seq_along(state_names))
       state_values <- as.numeric(sim_result[i, state_cols])
       state_env <- setNames(as.list(state_values), state_cols)
-      env <- list2env(c(param_env, state_env))
+      env <- list2env(c(param_env, state_env, list(t = sim_result$time[i])))
       eval(parse(text = rhs_expr), envir = env)
     })
     sim_result[[paste0("fit_var", fit_idx)]] <- fit_values
@@ -231,7 +289,7 @@ if (length(all_trajectories) > 0) {
     obs_col <- paste0("cases", fit_idx)
     
     if (use_diff == 1) {
-      rhs_expr <- ode_rhs(var_index, ode_system)
+      rhs_expr <- ode_rhs(var_index, ode_system_effective)
       
       fit_values_all <- list()
       for (sample_idx in 1:length(all_trajectories)) {
@@ -245,7 +303,7 @@ if (length(all_trajectories) > 0) {
             state_cols <- paste0("vars", seq_along(state_names))
             state_values <- as.numeric(sim_data[i, state_cols])
             state_env <- setNames(as.list(state_values), state_cols)
-            env <- list2env(c(param_env, state_env))
+            env <- list2env(c(param_env, state_env, list(t = sim_data$time[i])))
             eval(parse(text = rhs_expr), envir = env)
           })
           
